@@ -7,9 +7,10 @@
 //  Running on macOS 15.5
 //
 //  Copyright © 2025 Serhiy Mytrovtsiy. All rights reserved.
-//  
+//
 
 import SwiftUI
+import os
 
 struct Entity: Identifiable, Comparable {
     let id = UUID()
@@ -17,38 +18,24 @@ struct Entity: Identifiable, Comparable {
     let path: String
     let type: EntityType
     var size: Int64
+    var items: Int
     var children: [Entity]
     var level: Int = 0
     
-    init(name: String, path: String, size: Int64 = 0, isDirectory: Bool = false, children: [Entity] = []) {
+    var isDirectory: Bool { self.type == .folder }
+    var formattedSize: String { ByteCountFormatter.string(fromByteCount: self.size, countStyle: .file) }
+    
+    init(name: String, path: String, size: Int64 = 0, items: Int = 1, isDirectory: Bool = false, children: [Entity] = []) {
         self.name = name
         self.path = path
         self.size = size
+        self.items = items
         self.children = children
         self.type = isDirectory ? .folder : .file
     }
     
     static func < (lhs: Entity, rhs: Entity) -> Bool {
         return lhs.size < rhs.size
-    }
-    
-    var isDirectory: Bool {
-        return self.type == .folder
-    }
-    
-    var formattedSize: String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useAll]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: size)
-    }
-    
-    var items: Int {
-        var count = self.isDirectory ? 0 : 1
-        for child in children {
-            count += child.items
-        }
-        return count
     }
 }
 
@@ -73,7 +60,7 @@ enum EntityType: String, Comparable {
     }
 }
 
-class Analizer: ObservableObject {
+class Analyzer: ObservableObject {
     @Published var status: Status = .unknown
     @Published var errorMessage: String?
     
@@ -82,15 +69,21 @@ class Analizer: ObservableObject {
     
     @AppStorage("scanHiddenFiles") private var scanHiddenFiles: Bool = true
     
-    private var accumulatedScannedSize: Int64 = 0
-    private let updateThreshold: Int64 = 10 * 1024 * 1024
+    private let cancelled = OSAllocatedUnfairLock(initialState: false)
+    
+    private static let sizeFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useAll]
+        formatter.countStyle = .file
+        return formatter
+    }()
     
     enum Status {
         case unknown, running, completed, cancelled, error
     }
     
     struct Stats {
-        let start = Date()
+        var start = Date()
         var duration: TimeInterval = 0
         
         var size: Int64 = 0
@@ -99,10 +92,7 @@ class Analizer: ObservableObject {
         var entities: Int = 0
         
         var formattedSize: String {
-            let formatter = ByteCountFormatter()
-            formatter.allowedUnits = [.useAll]
-            formatter.countStyle = .file
-            return formatter.string(fromByteCount: size)
+            Analyzer.sizeFormatter.string(fromByteCount: size)
         }
         
         var formattedDuration: String {
@@ -120,6 +110,28 @@ class Analizer: ObservableObject {
         }
     }
     
+    private class Node {
+        let name: String
+        let path: String
+        var size: Int64 = 0
+        var items: Int = 0
+        let isDirectory: Bool
+        var children: [Node] = []
+        weak var parent: Node?
+        
+        init(name: String, path: String, isDirectory: Bool) {
+            self.name = name
+            self.path = path
+            self.isDirectory = isDirectory
+        }
+        
+        func toEntity() -> Entity {
+            let sortedChildren = children.sorted { $0.size > $1.size }.map { $0.toEntity() }
+            let totalItems = isDirectory ? sortedChildren.reduce(0) { $0 + $1.items } : 1
+            return Entity(name: name, path: path, size: size, items: totalItems, isDirectory: isDirectory, children: sortedChildren)
+        }
+    }
+    
     init() {
         #if DEBUG
         self.generateSampleData()
@@ -128,12 +140,15 @@ class Analizer: ObservableObject {
     
     public func start(_ path: String, pathCallback: ((String) -> Void)? = nil) {
         self.status = .running
+        self.cancelled.withLock { $0 = false }
         self.analyzedEntities = []
         self.stats = Stats()
+        let startTime = Date()
+        let scanHidden = self.scanHiddenFiles
         
-        if FileManager.default.isReadableFile(atPath: path) {
+        let beginScan = { (resolvedPath: String) in
             DispatchQueue.global(qos: .userInitiated).async {
-                let results = self.analyzeFolder(at: path)
+                let results = self.analyzeFolder(at: resolvedPath, startTime: startTime, scanHiddenFiles: scanHidden)
                 DispatchQueue.main.async {
                     self.analyzedEntities = results
                     if self.status != .cancelled {
@@ -141,28 +156,25 @@ class Analizer: ObservableObject {
                     }
                 }
             }
+        }
+        
+        if FileManager.default.isReadableFile(atPath: path) {
+            beginScan(path)
         } else {
-            self.requestFolderAccess { selectedURL in
+            Self.requestFolderAccess { selectedURL in
                 guard let selectedURL = selectedURL else { return }
                 pathCallback?(selectedURL.path)
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let results = self.analyzeFolder(at: selectedURL.path)
-                    DispatchQueue.main.async {
-                        self.analyzedEntities = results
-                        if self.status != .cancelled {
-                            self.status = .completed
-                        }
-                    }
-                }
+                beginScan(selectedURL.path)
             }
         }
     }
     
     public func stop() {
+        self.cancelled.withLock { $0 = true }
         self.status = .cancelled
     }
     
-    private func requestFolderAccess(completion: @escaping (URL?) -> Void) {
+    static func requestFolderAccess(completion: @escaping (URL?) -> Void) {
         let openPanel = NSOpenPanel()
         openPanel.canChooseFiles = false
         openPanel.canChooseDirectories = true
@@ -179,132 +191,187 @@ class Analizer: ObservableObject {
         }
     }
     
-    private func analyzeFolder(at path: String) -> [Entity] {
-        let fileManager = FileManager.default
-        var rootEntity: Entity? = nil
-        
-        var isDirectory: ObjCBool = false
-        if fileManager.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue {
-            let rootName = (path as NSString).lastPathComponent
-            let root = Entity(name: rootName, path: path, isDirectory: true)
-            rootEntity = root
-            DispatchQueue.main.async {
-                self.analyzedEntities = [root]
-            }
+    private func analyzeFolder(at path: String, startTime: Date, scanHiddenFiles: Bool) -> [Entity] {
+        var rootStat = stat()
+        guard lstat(path, &rootStat) == 0, (rootStat.st_mode & S_IFMT) == S_IFDIR else {
+            return []
         }
-        
-        var enumerationOptions: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
-        if !self.scanHiddenFiles {
-            enumerationOptions.insert(.skipsHiddenFiles)
+
+        let rootName = (path as NSString).lastPathComponent
+        let rootNode = Node(name: rootName, path: path, isDirectory: true)
+        let rootLock = NSLock()
+
+        DispatchQueue.main.async {
+            self.analyzedEntities = [rootNode.toEntity()]
         }
-        
-        if let enumerator = fileManager.enumerator(at: URL(fileURLWithPath: path), includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey], options: enumerationOptions, errorHandler: nil) {
-            for case let url as URL in enumerator {
-                if self.status == .cancelled { break }
-                if url.lastPathComponent == ".DS_Store" { continue }
-                self.processItem(url: url, rootEntity: &rootEntity, rootPath: path)
+
+        let topChildren = self.listDirectory(path, scanHidden: scanHiddenFiles)
+
+        let statsLock = OSAllocatedUnfairLock(initialState: Stats())
+        statsLock.withLock { $0.start = startTime }
+
+        let lastUpdateTime = OSAllocatedUnfairLock(initialState: CFAbsoluteTimeGetCurrent())
+
+        DispatchQueue.concurrentPerform(iterations: topChildren.count) { index in
+            if self.cancelled.withLock({ $0 }) { return }
+
+            let entry = topChildren[index]
+            let childNode = Node(name: entry.name, path: entry.path, isDirectory: entry.isDir)
+
+            if entry.isDir {
+                self.scanDirectoryRecursive(node: childNode, scanHidden: scanHiddenFiles)
+            } else {
+                childNode.size = entry.size
             }
-        }
-        
-        guard let root = rootEntity else { return [] }
-        return [root]
-    }
-    
-    private func processItem(url: URL, rootEntity: inout Entity?, rootPath: String) {
-        do {
-            let attributes = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-            let isDirectory = attributes.isDirectory ?? false
-            let size = attributes.fileSize ?? 0
-            let path = url.path
-            if !isDirectory && size == 0 { return }
-            let entity = Entity(name: url.lastPathComponent, path: path, size: Int64(size), isDirectory: isDirectory)
-            
-            if var root = rootEntity {
-                self.addToParent(entity: entity, root: &root, rootPath: rootPath)
-                rootEntity = root
+
+            let childFiles: Int
+            let childFolders: Int
+            let childSize: Int64
+            if entry.isDir {
+                (childFiles, childFolders, childSize) = self.countStats(childNode)
+            } else {
+                childFiles = 1
+                childFolders = 0
+                childSize = entry.size
             }
-            
-            DispatchQueue.main.async {
-                if let start = self.stats?.start {
-                    self.stats?.duration = Date().timeIntervalSince(start)
+
+            rootLock.lock()
+            childNode.parent = rootNode
+            rootNode.children.append(childNode)
+            rootNode.size += childNode.size
+            rootNode.items += (entry.isDir ? childNode.items : 1)
+            rootLock.unlock()
+
+            statsLock.withLock {
+                $0.files += childFiles
+                $0.folders += childFolders + (entry.isDir ? 1 : 0)
+                $0.size += childSize
+                $0.entities += childFiles + childFolders + (entry.isDir ? 1 : 0)
+                $0.duration = Date().timeIntervalSince(startTime)
+            }
+
+            let now = CFAbsoluteTimeGetCurrent()
+            let shouldUpdate = lastUpdateTime.withLock { last -> Bool in
+                if now - last > 0.5 {
+                    last = now
+                    return true
                 }
-                self.stats?.entities += 1
-                if isDirectory {
-                    self.stats?.folders += 1
-                } else {
-                    self.stats?.files += 1
-                    self.stats?.size += Int64(size)
+                return false
+            }
+
+            if shouldUpdate {
+                let currentStats = statsLock.withLock { $0 }
+                rootLock.lock()
+                let currentRoot = rootNode.toEntity()
+                rootLock.unlock()
+                DispatchQueue.main.async {
+                    self.stats = currentStats
+                    self.analyzedEntities = [currentRoot]
                 }
             }
-            
-            if !isDirectory {
-                self.accumulatedScannedSize += Int64(size)
-                if self.accumulatedScannedSize >= self.updateThreshold {
-                    self.accumulatedScannedSize = 0
-                    if let root = rootEntity {
-                        DispatchQueue.main.async {
-                            self.analyzedEntities = [root]
-                        }
-                    }
-                }
+        }
+
+        let finalStats = statsLock.withLock { stats -> Stats in
+            var s = stats
+            s.duration = Date().timeIntervalSince(startTime)
+            return s
+        }
+        DispatchQueue.main.async {
+            self.stats = finalStats
+        }
+
+        rootLock.lock()
+        let result = rootNode.toEntity()
+        rootLock.unlock()
+        return [result]
+    }
+
+    private struct DirEntry {
+        let name: String
+        let path: String
+        let isDir: Bool
+        let size: Int64
+    }
+
+    private static let excludedPaths: Set<String> = [
+        "/System/Volumes/Data",
+        "/System/Volumes/Preboot",
+        "/System/Volumes/VM",
+        "/System/Volumes/Update",
+        "/System/Volumes/xarts",
+        "/System/Volumes/iSCPreboot",
+        "/System/Volumes/Hardware",
+        "/System/Volumes/Recovery"
+    ]
+
+    private func listDirectory(_ path: String, scanHidden: Bool) -> [DirEntry] {
+        guard let dir = opendir(path) else { return [] }
+        defer { closedir(dir) }
+
+        var entries: [DirEntry] = []
+        while let entry = readdir(dir) {
+            let name = withUnsafePointer(to: entry.pointee.d_name) { ptr in
+                String(cString: UnsafeRawPointer(ptr).assumingMemoryBound(to: CChar.self))
             }
-        } catch {
-            print("error processing \(url.path): \(error)")
+            if name == "." || name == ".." || name == ".DS_Store" { continue }
+            if !scanHidden && name.hasPrefix(".") { continue }
+
+            let fullPath = path.hasSuffix("/") ? path + name : path + "/" + name
+            if Self.excludedPaths.contains(fullPath) { continue }
+            var fileStat = stat()
+            guard lstat(fullPath, &fileStat) == 0 else { continue }
+
+            let isDir = (fileStat.st_mode & S_IFMT) == S_IFDIR
+            // Use allocated block count rather than logical size: accounts for sparse files
+            // (Docker.raw, VM images) and APFS compression, matching what the disk actually holds.
+            let size = isDir ? Int64(0) : Int64(fileStat.st_blocks) * 512
+
+            if !isDir && size == 0 { continue }
+
+            entries.append(DirEntry(name: name, path: fullPath, isDir: isDir, size: size))
+        }
+        return entries
+    }
+
+    private func scanDirectoryRecursive(node: Node, scanHidden: Bool) {
+        if self.cancelled.withLock({ $0 }) { return }
+
+        let entries = listDirectory(node.path, scanHidden: scanHidden)
+        for entry in entries {
+            let child = Node(name: entry.name, path: entry.path, isDirectory: entry.isDir)
+            child.size = entry.size
+            child.parent = node
+            node.children.append(child)
+
+            if entry.isDir {
+                scanDirectoryRecursive(node: child, scanHidden: scanHidden)
+                node.size += child.size
+                node.items += child.items
+            } else {
+                node.size += entry.size
+                node.items += 1
+            }
         }
     }
-    
-    private func addToParent(entity: Entity, root: inout Entity, rootPath: String) {
-        let normalizedRootPath = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
-        
-        var relativePath: String
-        if entity.path.hasPrefix(normalizedRootPath) {
-            relativePath = String(entity.path.dropFirst(normalizedRootPath.count))
-        } else {
-            relativePath = entity.path.replacingOccurrences(of: root.path, with: "")
-            if relativePath.hasPrefix("/") {
-                relativePath = String(relativePath.dropFirst())
+
+    private func countStats(_ node: Node) -> (files: Int, folders: Int, size: Int64) {
+        var files = 0
+        var folders = 0
+        var size: Int64 = 0
+
+        for child in node.children {
+            if child.isDirectory {
+                folders += 1
+                let (f, d, s) = countStats(child)
+                files += f
+                folders += d
+                size += s
+            } else {
+                files += 1
+                size += child.size
             }
         }
-        
-        if relativePath.isEmpty || !relativePath.contains("/") {
-            if !root.children.contains(where: { $0.path == entity.path }) {
-                root.children.append(entity)
-            }
-            root.size += entity.size
-            return
-        }
-        
-        let components = relativePath.split(separator: "/").map(String.init)
-        self.addNestedEntity(entity: entity, parentPath: normalizedRootPath, pathComponents: components, currentIndex: 0, parent: &root)
-    }
-    
-    private func addNestedEntity(entity: Entity, parentPath: String, pathComponents: [String], currentIndex: Int, parent: inout Entity) {
-        if currentIndex == pathComponents.count - 1 {
-            if !parent.children.contains(where: { $0.path == entity.path }) {
-                parent.children.append(entity)
-            }
-            parent.size += entity.size
-            return
-        }
-        
-        let folderName = pathComponents[currentIndex]
-        let folderPath = parentPath + folderName + "/"
-        
-        if let index = parent.children.firstIndex(where: { $0.name == folderName && $0.isDirectory }) {
-            var childFolder = parent.children[index]
-            self.addNestedEntity(entity: entity, parentPath: folderPath, pathComponents: pathComponents, currentIndex: currentIndex + 1, parent: &childFolder)
-            parent.children[index] = childFolder
-            parent.size += entity.size
-            return
-        }
-        
-        var newFolder = Entity(name: folderName, path: folderPath, isDirectory: true)
-        
-        self.addNestedEntity(entity: entity, parentPath: folderPath, pathComponents: pathComponents, currentIndex: currentIndex + 1, parent: &newFolder)
-        
-        parent.children.append(newFolder)
-        parent.children.sort { $0.size > $1.size }
-        parent.size += entity.size
+        return (files, folders, size)
     }
     
     private func generateSampleData() {
@@ -388,13 +455,16 @@ class Analizer: ObservableObject {
     private func updateDirectorySizes(entity: inout Entity) {
         if entity.isDirectory {
             var totalSize: Int64 = 0
+            var totalItems: Int = 0
             for i in 0..<entity.children.count {
                 var child = entity.children[i]
                 updateDirectorySizes(entity: &child)
                 entity.children[i] = child
                 totalSize += child.size
+                totalItems += child.items
             }
             entity.size = totalSize
+            entity.items = totalItems
         }
     }
 

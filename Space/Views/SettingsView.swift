@@ -31,7 +31,7 @@ struct SettingsView: View {
         VStack(alignment: .center, spacing: 12) {
             GroupBox {
                 VStack(spacing: 10) {
-                    Image(nsImage: NSImage(named: NSImage.Name("AppIcon"))!)
+                    Image(nsImage: NSImage(named: NSImage.Name("AppIcon")) ?? NSImage())
                     
                     VStack(spacing: 2) {
                         Text("Space")

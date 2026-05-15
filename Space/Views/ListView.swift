@@ -12,7 +12,7 @@
 import SwiftUI
 
 struct ListView: View {
-    @EnvironmentObject private var analizer: Analizer
+    @EnvironmentObject private var analyzer: Analyzer
     
     @State private var sortOrder = [KeyPathComparator(\Entity.size, order: .reverse)]
     @State private var expandedFolders: Set<String> = []
@@ -94,14 +94,14 @@ struct ListView: View {
                             }
                     }
                 }
-                .onChange(of: self.analizer.status) { _, _ in
-                    if self.analizer.status == .running {
+                .onChange(of: self.analyzer.status) { _, _ in
+                    if self.analyzer.status == .running {
                         self.flattenedEntities = []
                         self.expandedFolders.removeAll()
-                        self.sortOrder = [KeyPathComparator(\Entity.size, order: .forward)]
+                        self.sortOrder = [KeyPathComparator(\Entity.size, order: .reverse)]
                     }
                 }
-                .onChange(of: self.analizer.analyzedEntities) { _, _ in
+                .onChange(of: self.analyzer.analyzedEntities) { _, _ in
                     self.updateFlattenedEntities()
                 }
                 .onChange(of: self.expandedFolders) { _, _ in
@@ -141,7 +141,7 @@ struct ListView: View {
     }
     
     private func updateFlattenedEntities() {
-        guard let rootEntity = self.analizer.analyzedEntities.first else {
+        guard let rootEntity = self.analyzer.analyzedEntities.first else {
             self.flattenedEntities = []
             return
         }

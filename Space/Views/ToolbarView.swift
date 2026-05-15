@@ -12,7 +12,7 @@
 import SwiftUI
 
 struct ToolbarView: ToolbarContent {
-    @ObservedObject public var analizer: Analizer
+    @ObservedObject public var analyzer: Analyzer
     @Binding public var width: CGFloat
     @State private var path: String = NSHomeDirectory()
     @State private var showStatusInfo: Bool = false
@@ -35,7 +35,7 @@ struct ToolbarView: ToolbarContent {
                     .font(.system(size: 18))
             }
             .buttonStyle(.borderless)
-            .padding(.trailing, 10)
+            .padding(.horizontal, 10)
             .help(Text("Open settings"))
         }
         
@@ -48,7 +48,7 @@ struct ToolbarView: ToolbarContent {
                         .font(.system(size: 14))
                 }
                 .buttonStyle(.borderless)
-                .padding(.leading, 10)
+                .padding(.leading, 6)
                 
                 TextField("Path to the folder to analyze", text: $path)
                     .font(.system(size: 13))
@@ -57,14 +57,14 @@ struct ToolbarView: ToolbarContent {
                     .textFieldStyle(PlainTextFieldStyle())
                     .background(Color.clear)
                     .onSubmit {
-                        guard self.analizer.status != .running else { return }
-                        self.analize(self.path)
+                        guard self.analyzer.status != .running else { return }
+                        self.analyze(self.path)
                     }
                 
                 Button(action: {
                     showStatusInfo = true
                 }) {
-                    switch self.analizer.status {
+                    switch self.analyzer.status {
                     case .running:
                         ProgressView()
                             .progressViewStyle(CircularProgressViewStyle())
@@ -85,34 +85,32 @@ struct ToolbarView: ToolbarContent {
                 }
                 .buttonStyle(.borderless)
                 .popover(isPresented: $showStatusInfo, arrowEdge: .bottom) {
-                    StatusView(status: analizer.status, duration: analizer.stats?.formattedDuration ?? "N/A")
+                    StatusView(status: analyzer.status, duration: analyzer.stats?.formattedDuration ?? "N/A")
                 }
                 .padding(.trailing, 10)
             }
-            .frame(width: 460)
-            .background(Material.bar)
-            .cornerRadius(5)
+            .frame(width: self.navbarWidth)
         }
         
         ToolbarItem(placement: .primaryAction) {
             Button(action: {
-                if self.analizer.status != .running {
-                    self.analize(self.path)
+                if self.analyzer.status != .running {
+                    self.analyze(self.path)
                 } else {
-                    self.analizer.stop()
+                    self.analyzer.stop()
                 }
             }) {
-                Image(systemName: self.analizer.status != .running ? "play.fill" : "stop.fill")
+                Image(systemName: self.analyzer.status != .running ? "play.fill" : "stop.fill")
                     .font(.system(size: 18))
             }
             .buttonStyle(.borderless)
-            .padding(.trailing, 10)
-            .help(Text("\(self.analizer.status != .running ? "Run" : "Stop") the analysis"))
+            .padding(.horizontal, 10)
+            .help(Text("\(self.analyzer.status != .running ? "Run" : "Stop") the analysis"))
         }
     }
     
-    private func analize(_ path: String) {
-        self.analizer.start(self.path) { newPath in
+    private func analyze(_ path: String) {
+        self.analyzer.start(self.path) { newPath in
             DispatchQueue.main.async {
                 self.path = newPath
             }
@@ -120,18 +118,10 @@ struct ToolbarView: ToolbarContent {
     }
     
     private func selectFolder() {
-        let openPanel = NSOpenPanel()
-        openPanel.canChooseFiles = false
-        openPanel.canChooseDirectories = true
-        openPanel.allowsMultipleSelection = false
-        openPanel.message = "Select a folder to analyze"
-        openPanel.prompt = "Select"
-        
-        openPanel.begin { response in
-            if response == .OK, let url = openPanel.url {
-                DispatchQueue.main.async {
-                    self.path = url.path
-                }
+        Analyzer.requestFolderAccess { selectedURL in
+            guard let selectedURL = selectedURL else { return }
+            DispatchQueue.main.async {
+                self.path = selectedURL.path
             }
         }
     }
@@ -168,7 +158,7 @@ struct ToolbarView: ToolbarContent {
 }
 
 struct StatusView: View {
-    let status: Analizer.Status
+    let status: Analyzer.Status
     let duration: String
     
     var body: some View {

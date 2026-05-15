@@ -7,41 +7,33 @@
 //  Running on macOS 15.5
 //
 //  Copyright © 2025 Serhiy Mytrovtsiy. All rights reserved.
-//  
+//
 
 import SwiftUI
 import Charts
 
 struct DetailsView: View {
-    @EnvironmentObject private var analizer: Analizer
+    @EnvironmentObject private var analyzer: Analyzer
     @State private var selectedEntity: Entity? = nil
-    @State var selection: Int?
-    
+    @State private var topEntities: [Entity] = []
+
     private var rootEntity: Entity? {
-        analizer.analyzedEntities.first
+        analyzer.analyzedEntities.first
     }
-    private var entities: [Entity] {
-        if let root = rootEntity {
-            return root.children.sorted { first, second in
-                return first.size > second.size
-            }.prefix(10).map { $0 }
-        }
-        return []
-    }
-    
+
     private static let chartColors: [Color] = [
       .red, .green, .blue, .yellow, .purple, .indigo, .brown, .mint, .orange, .pink, .cyan
     ]
-    
+
     var body: some View {
         VStack(spacing: 10) {
-            Chart(self.entities, id: \.id) { product in
+            Chart(self.topEntities, id: \.id) { product in
                 SectorView(product: product, selectedEntity: self.$selectedEntity)
             }
             .chartLegend(.hidden)
             .chartBackground { proxy in
                 VStack {
-                    Text((self.selectedEntity?.formattedSize ?? self.analizer.stats?.formattedSize) ?? "")
+                    Text((self.selectedEntity?.formattedSize ?? self.analyzer.stats?.formattedSize) ?? "")
                         .font(.title2)
                     Text(self.selectedEntity?.name ?? rootEntity?.name ?? "")
                         .font(.subheadline)
@@ -57,29 +49,29 @@ struct DetailsView: View {
                 SpatialTapGesture().onEnded { event in
                     let center = CGPoint(x: chart.plotSize.width / 2, y: chart.plotSize.height / 2)
                     let vector = CGPoint(x: event.location.x - center.x, y: event.location.y - center.y)
-                    
+
                     let distance = sqrt(pow(vector.x, 2) + pow(vector.y, 2))
                     let radius = min(chart.plotSize.width, chart.plotSize.height) / 2
-                    
+
                     if distance < radius * 0.75 || distance > radius {
                         self.selectedEntity = nil
                         return
                     }
-                    
+
                     let angle = atan2(vector.y, vector.x)
                     let normalizedAngle = angle < 0 ? angle + 2 * Double.pi : angle
-                    
+
                     var startAngle: Double = -Double.pi / 2
-                    let totalSize = self.entities.reduce(0) { $0 + $1.size }
-                    
-                    for child in self.entities {
+                    let totalSize = self.topEntities.reduce(0) { $0 + $1.size }
+
+                    for child in self.topEntities {
                         let proportion = Double(child.size) / Double(totalSize)
                         let sectorAngle = proportion * 2 * Double.pi
                         let endAngle = startAngle + sectorAngle
-                        
+
                         let normalizedStartAngle = startAngle < 0 ? startAngle + 2 * Double.pi : startAngle
                         let normalizedEndAngle = endAngle < 0 ? endAngle + 2 * Double.pi : endAngle
-                        
+
                         if (normalizedStartAngle < normalizedEndAngle &&
                             normalizedAngle >= normalizedStartAngle &&
                             normalizedAngle <= normalizedEndAngle) ||
@@ -90,18 +82,18 @@ struct DetailsView: View {
                                 self.selectedEntity = nil
                                 break
                             }
-                            
+
                             self.selectedEntity = child
                             break
                         }
-                        
+
                         startAngle = endAngle
                     }
                 }
             }
-            
+
             VStack(spacing: 4) {
-                if let stats = self.analizer.stats {
+                if let stats = self.analyzer.stats {
                     LabelValueItem("Folder", value: rootEntity?.path ?? "", valueSelection: true)
                     LabelValueItem("Total size", value: stats.formattedSize)
                     LabelValueItem("Objects", value: "\(stats.folders + stats.files)")
@@ -111,21 +103,33 @@ struct DetailsView: View {
             }
         }
         .padding()
-    }
-    
-    private func findSelectedEntity(_ value: Int) -> Entity? {
-        var accumulatedCount: Int64 = 0
-        return self.entities.first { entity in
-            accumulatedCount += entity.size
-            return value <= accumulatedCount
+        .onChange(of: self.analyzer.analyzedEntities) { _, _ in
+            self.updateTopEntities()
         }
+        .onChange(of: self.analyzer.status) { _, newStatus in
+            if newStatus == .running {
+                self.selectedEntity = nil
+                self.topEntities = []
+            }
+        }
+        .onAppear {
+            self.updateTopEntities()
+        }
+    }
+
+    private func updateTopEntities() {
+        guard let root = rootEntity else {
+            self.topEntities = []
+            return
+        }
+        self.topEntities = root.children.sorted { $0.size > $1.size }.prefix(10).map { $0 }
     }
 }
 
 struct SectorView: ChartContent {
     let product: Entity
     @Binding var selectedEntity: Entity?
-    
+
     var body: some ChartContent {
         SectorMark(
             angle: .value(Text(verbatim: product.path), product.size),
@@ -141,15 +145,15 @@ struct SectorView: ChartContent {
 struct LabelValueItem: View {
     private let label: String
     private let value: String
-    
+
     private let valueSelection: Bool
-    
+
     init(_ label: String, value: String, valueSelection: Bool = false) {
         self.label = label
         self.value = value
         self.valueSelection = valueSelection
     }
-    
+
     var body: some View {
         HStack(alignment: .top) {
             Text(self.label)

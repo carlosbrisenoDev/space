@@ -15,7 +15,7 @@ import SwiftUI
 struct SpaceApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
-    @StateObject private var analizer: Analizer = Analizer()
+    @StateObject private var analyzer: Analyzer = Analyzer()
     @State private var searchPath: String = NSHomeDirectory()
     @State private var windowWidth: CGFloat = 0
     
@@ -23,9 +23,9 @@ struct SpaceApp: App {
         WindowGroup {
             GeometryReader { geometry in
                 ContentView()
-                    .environmentObject(self.analizer)
+                    .environmentObject(self.analyzer)
                     .toolbar {
-                        ToolbarView(analizer: self.analizer, width: $windowWidth)
+                        ToolbarView(analyzer: self.analyzer, width: $windowWidth)
                     }
                     .onAppear {
                         self.windowWidth = geometry.size.width
@@ -50,27 +50,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct ContentView: View {
-    @EnvironmentObject private var analizer: Analizer
+    @EnvironmentObject private var analyzer: Analyzer
     
     var body: some View {
         VStack(spacing: 0) {
             Divider()
             VStack {
-                if let errorMessage = self.analizer.errorMessage {
+                if let errorMessage = self.analyzer.errorMessage {
                     Spacer()
                     Text(errorMessage)
                         .foregroundColor(.red)
                     Spacer()
-                } else if self.analizer.analyzedEntities.isEmpty {
+                } else if self.analyzer.analyzedEntities.isEmpty {
                     Spacer()
                     Text("No results yet. Start an analysis.")
                         .foregroundColor(.secondary)
                     Spacer()
                 } else {
                     HStack(spacing: 2) {
-                        ListView().environmentObject(self.analizer)
+                        ListView().environmentObject(self.analyzer)
                         Divider()
-                        DetailsView().environmentObject(self.analizer).frame(width: 250)
+                        DetailsView().environmentObject(self.analyzer).frame(width: 250)
                     }
                 }
             }
