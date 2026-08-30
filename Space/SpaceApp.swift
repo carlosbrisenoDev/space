@@ -36,7 +36,7 @@ struct SpaceApp: App {
                         }
                     }
             }
-            .frame(minWidth: 900, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity)
+            .frame(minWidth: 990, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity)
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unified)
@@ -70,7 +70,7 @@ struct ContentView: View {
                     HStack(spacing: 2) {
                         ListView().environmentObject(self.analyzer)
                         Divider()
-                        DetailsView().environmentObject(self.analyzer).frame(width: 250)
+                        DetailsView().environmentObject(self.analyzer).frame(width: 350)
                     }
                 }
             }

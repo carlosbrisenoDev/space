@@ -37,6 +37,16 @@ struct Entity: Identifiable, Comparable {
     static func < (lhs: Entity, rhs: Entity) -> Bool {
         return lhs.size < rhs.size
     }
+    
+    func find(byPath targetPath: String) -> Entity? {
+        if self.path == targetPath { return self }
+        for child in self.children {
+            if let match = child.find(byPath: targetPath) {
+                return match
+            }
+        }
+        return nil
+    }
 }
 
 enum EntityType: String, Comparable {
@@ -478,5 +488,74 @@ class Analyzer: ObservableObject {
             totalSize += calculateTotalSize(entity: child)
         }
         return totalSize
+    }
+
+    public func deleteItem(at path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        
+        DispatchQueue.main.async {
+            self.removeEntityFromTree(path: path)
+        }
+    }
+    
+    public func removeEntityFromTree(path: String) {
+        guard var root = self.analyzedEntities.first else { return }
+        if root.path == path {
+            self.analyzedEntities = []
+            self.stats = nil
+            return
+        }
+        
+        let removed = self.recursiveRemoveEntity(from: &root, path: path)
+        if removed {
+            self.updateDirectorySizes(entity: &root)
+            self.analyzedEntities = [root]
+            
+            if var currentStats = self.stats {
+                currentStats.size = root.size
+                let (f, d, _) = self.countEntityStats(root)
+                currentStats.files = f
+                currentStats.folders = d
+                currentStats.entities = f + d
+                self.stats = currentStats
+            }
+        }
+    }
+    
+    @discardableResult
+    private func recursiveRemoveEntity(from entity: inout Entity, path: String) -> Bool {
+        if let idx = entity.children.firstIndex(where: { $0.path == path }) {
+            entity.children.remove(at: idx)
+            return true
+        }
+        for i in 0..<entity.children.count {
+            var child = entity.children[i]
+            if recursiveRemoveEntity(from: &child, path: path) {
+                entity.children[i] = child
+                return true
+            }
+        }
+        return false
+    }
+    
+    private func countEntityStats(_ entity: Entity) -> (files: Int, folders: Int, size: Int64) {
+        var files = 0
+        var folders = 0
+        var size: Int64 = 0
+        
+        for child in entity.children {
+            if child.isDirectory {
+                folders += 1
+                let (f, d, s) = countEntityStats(child)
+                files += f
+                folders += d
+                size += s
+            } else {
+                files += 1
+                size += child.size
+            }
+        }
+        return (files, folders, size)
     }
 }

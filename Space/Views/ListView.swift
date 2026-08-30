@@ -17,6 +17,9 @@ struct ListView: View {
     @State private var sortOrder = [KeyPathComparator(\Entity.size, order: .reverse)]
     @State private var expandedFolders: Set<String> = []
     @State private var flattenedEntities: [Entity] = []
+    @State private var itemToDelete: Entity? = nil
+    @State private var deleteError: String? = nil
+    @State private var showDeleteError: Bool = false
     
     var body: some View {
         GeometryReader { geometry in
@@ -30,18 +33,22 @@ struct ListView: View {
                                     .frame(width: 14)
                             }
                             
+                            let iconInfo = ItemIconResolver.icon(name: entity.name, path: entity.path, isDirectory: entity.isDirectory)
+                            
                             if entity.isDirectory {
                                 Image(systemName: self.isExpanded(path: entity.path) ? "chevron.down" : "chevron.right")
                                     .foregroundColor(.secondary)
                                     .font(.system(size: 11))
-                                Image(systemName: "folder.fill")
-                                    .foregroundColor(.blue)
+                                Image(systemName: iconInfo.systemName)
+                                    .foregroundColor(iconInfo.color)
+                                    .font(.system(size: 13, weight: .semibold))
                             } else {
                                 Rectangle()
                                     .fill(Color.clear)
                                     .frame(width: 13)
-                                Image(systemName: "doc.fill")
-                                    .foregroundColor(.gray)
+                                Image(systemName: iconInfo.systemName)
+                                    .foregroundColor(iconInfo.color)
+                                    .font(.system(size: 13, weight: .semibold))
                             }
                             
                             Text(entity.name)
@@ -74,16 +81,27 @@ struct ListView: View {
                     .width(80)
                     
                     TableColumn("") { entity in
-                        Button(action: {
-                            self.openInFinder(path: entity.path)
-                        }) {
-                            Image(systemName: "folder")
-                                .foregroundColor(.blue)
+                        HStack(spacing: 6) {
+                            Button(action: {
+                                self.openInFinder(path: entity.path)
+                            }) {
+                                Image(systemName: "folder")
+                                    .foregroundColor(.blue)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open in Finder")
+                            
+                            Button(action: {
+                                self.itemToDelete = entity
+                            }) {
+                                Image(systemName: "trash")
+                                    .foregroundColor(.red.opacity(0.85))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Move to Trash")
                         }
-                        .buttonStyle(.plain)
-                        .help("Open in Finder")
                     }
-                    .width(30)
+                    .width(55)
                 } rows: {
                     ForEach(self.flattenedEntities) { entity in
                         TableRow(entity)
@@ -91,8 +109,39 @@ struct ListView: View {
                                 Button("Reveal in Finder") {
                                     self.openInFinder(path: entity.path)
                                 }
+                                Divider()
+                                Button(role: .destructive) {
+                                    self.itemToDelete = entity
+                                } label: {
+                                    Label("Move to Trash", systemImage: "trash")
+                                }
                             }
                     }
+                }
+                .alert("Move to Trash?", isPresented: Binding(get: { itemToDelete != nil }, set: { if !$0 { itemToDelete = nil } })) {
+                    Button("Move to Trash", role: .destructive) {
+                        if let item = itemToDelete {
+                            do {
+                                try self.analyzer.deleteItem(at: item.path)
+                            } catch {
+                                self.deleteError = error.localizedDescription
+                                self.showDeleteError = true
+                            }
+                            self.itemToDelete = nil
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {
+                        self.itemToDelete = nil
+                    }
+                } message: {
+                    if let item = itemToDelete {
+                        Text("Are you sure you want to move \"\(item.name)\" to the Trash?")
+                    }
+                }
+                .alert("Error deleting item", isPresented: $showDeleteError) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(deleteError ?? "An unknown error occurred while moving the item to the Trash.")
                 }
                 .onChange(of: self.analyzer.status) { _, _ in
                     if self.analyzer.status == .running {
