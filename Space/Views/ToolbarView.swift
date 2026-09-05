@@ -25,7 +25,7 @@ struct CacheCategory: Identifiable {
     var resolvedPaths: [String] = []
     var detectedItems: [String] = []
     var size: Int64 = 0
-    var isSelected: Bool = true
+    var isSelected: Bool = false
     
     var formattedSize: String {
         ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
@@ -234,8 +234,9 @@ class CacheCleaner: ObservableObject {
         self.isScanning = true
         self.cleanCompleted = false
         
+        let currentCategories = self.categories
         DispatchQueue.global(qos: .userInitiated).async {
-            var updatedCats = self.categories
+            var updatedCats = currentCategories
             var total: Int64 = 0
             
             for i in 0..<updatedCats.count {
@@ -270,6 +271,12 @@ class CacheCleaner: ObservableObject {
             }
             
             DispatchQueue.main.async {
+                for i in 0..<updatedCats.count {
+                    if let existing = self.categories.first(where: { $0.id == updatedCats[i].id }) {
+                        updatedCats[i].isSelected = existing.isSelected
+                    }
+                }
+                
                 self.categories = updatedCats
                 self.totalFoundSize = total
                 self.isScanning = false
@@ -281,10 +288,11 @@ class CacheCleaner: ObservableObject {
         self.isCleaning = true
         self.cleanCompleted = false
         
+        let currentCategories = self.categories
         DispatchQueue.global(qos: .userInitiated).async {
             var totalCleaned: Int64 = 0
             
-            for cat in self.categories where cat.isSelected {
+            for cat in currentCategories where cat.isSelected {
                 for path in cat.resolvedPaths {
                     let cleaned = Self.cleanFolderContents(at: path)
                     totalCleaned += cleaned

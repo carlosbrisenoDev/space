@@ -121,11 +121,16 @@ struct ListView: View {
                 .alert("Move to Trash?", isPresented: Binding(get: { itemToDelete != nil }, set: { if !$0 { itemToDelete = nil } })) {
                     Button("Move to Trash", role: .destructive) {
                         if let item = itemToDelete {
-                            do {
-                                try self.analyzer.deleteItem(at: item.path)
-                            } catch {
-                                self.deleteError = error.localizedDescription
-                                self.showDeleteError = true
+                            let itemPath = item.path
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                do {
+                                    try self.analyzer.deleteItem(at: itemPath)
+                                } catch {
+                                    DispatchQueue.main.async {
+                                        self.deleteError = error.localizedDescription
+                                        self.showDeleteError = true
+                                    }
+                                }
                             }
                             self.itemToDelete = nil
                         }

@@ -563,7 +563,7 @@ struct BubbleChartView: View {
                     }
                 
                 ForEach(nodes) { node in
-                    let isSelected = selectedItem?.id == node.item.id ||
+                    let isSelected = (selectedItem?.path == node.item.path && !node.item.path.isEmpty) ||
                         (selectedItem?.isOther == true && node.item.isOther)
                     let isHovered = hoveredId == node.item.id
                     let percent = totalSize > 0 ? (Double(node.item.size) / Double(totalSize) * 100) : 0
@@ -839,7 +839,7 @@ struct BarChartView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 5) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        let isSelected = selectedItem?.id == item.id ||
+                        let isSelected = (selectedItem?.path == item.path && !item.path.isEmpty) ||
                             (selectedItem?.isOther == true && item.isOther)
                         let gradient = CleanMyMacPalette.gradient(for: item.colorIndex, isOther: item.isOther)
                         let percent = totalSize > 0 ? (Double(item.size) / Double(totalSize) * 100) : 0
@@ -887,7 +887,7 @@ struct SegmentedStorageBar: View {
             let availableWidth = max(geo.size.width - CGFloat(items.count - 1) * 2, 10)
             HStack(spacing: 2) {
                 ForEach(items) { item in
-                    let isSelected = selectedItem?.id == item.id ||
+                    let isSelected = (selectedItem?.path == item.path && !item.path.isEmpty) ||
                         (selectedItem?.isOther == true && item.isOther)
                     let fraction = totalSize > 0 ? (Double(item.size) / Double(totalSize)) : 0
                     let segmentWidth = max(CGFloat(fraction) * availableWidth, 5)
@@ -1163,12 +1163,19 @@ struct SelectedItemCard: View {
         )
         .alert("Move to Trash?", isPresented: $showDeleteConfirm) {
             Button("Move to Trash", role: .destructive) {
-                do {
-                    try analyzer.deleteItem(at: item.path)
-                    onDeselect()
-                } catch {
-                    self.errorMessage = error.localizedDescription
-                    self.showErrorAlert = true
+                let itemPath = item.path
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try analyzer.deleteItem(at: itemPath)
+                        DispatchQueue.main.async {
+                            onDeselect()
+                        }
+                    } catch {
+                        DispatchQueue.main.async {
+                            self.errorMessage = error.localizedDescription
+                            self.showErrorAlert = true
+                        }
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}
